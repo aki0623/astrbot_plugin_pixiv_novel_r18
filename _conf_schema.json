@@ -71,6 +71,34 @@
     "hint": "NapCat 已测试前 10 篇真实 txt 文件合并转发可用，建议保持 10。",
     "default": 10
   },
+  "illust_limit": {
+    "description": "插画抓取数量",
+    "type": "int",
+    "default": 50
+  },
+  "illust_ranking_mode": {
+    "description": "Pixiv 插画排行模式",
+    "type": "string",
+    "default": "daily_r18"
+  },
+  "illust_content": {
+    "description": "Pixiv 插画排行内容类型",
+    "type": "string",
+    "hint": "对应 ranking.php 的 content 参数，默认 illust。",
+    "default": "illust"
+  },
+  "illust_image_size": {
+    "description": "插画下载规格",
+    "type": "string",
+    "hint": "建议 regular。可填 original，但图片更大，合并转发更容易失败。",
+    "default": "regular"
+  },
+  "illust_forward_batch_size": {
+    "description": "每个插画合并转发包含的作品数",
+    "type": "int",
+    "hint": "建议 10；如果图片发送失败，可以改成 5。",
+    "default": 10
+  },
   "forward_sender_uin": {
     "description": "合并转发节点显示 QQ",
     "type": "int",

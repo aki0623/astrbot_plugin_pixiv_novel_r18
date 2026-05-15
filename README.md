@@ -1,6 +1,6 @@
 # Pixiv R18 小说日榜推送
 
-AstrBot 插件：每天 00:00 抓取 Pixiv 小说 R18 日榜，默认筛选中文作品，将每篇小说保存为独立 txt，并按每 10 篇一个合并转发推送到订阅群。
+AstrBot 插件：每天 00:00 抓取 Pixiv 小说 R18 日榜，默认筛选中文作品，将每篇小说保存为独立 txt，并按每 10 篇一个合并转发推送到订阅群。也支持手动抓取 Pixiv R18 插画日榜前 50，并按每 10 个作品一个合并转发发送标题和图片。
 
 ## 使用
 
@@ -20,12 +20,19 @@ AstrBot 插件：每天 00:00 抓取 Pixiv 小说 R18 日榜，默认筛选中�
 
 如果 AstrBot 配置了全局唤醒词，例如 `koha`，也可以使用 `koha pixiv_r18_run`。
 
+抓取插画 R18 日榜：
+
+```text
+/pixiv_r18_illust_run
+```
+
 ## 指令
 
 - `/pixiv_r18_subscribe add`：订阅当前会话。
 - `/pixiv_r18_subscribe remove`：取消订阅当前会话。
 - `/pixiv_r18_subscribe list`：查看订阅数量。
 - `/pixiv_r18_run`：立即抓取并发送到当前会话。
+- `/pixiv_r18_illust_run`：立即抓取 Pixiv R18 插画日榜前 50，下载图片并发送到当前会话。
 - `/pixiv_r18_check_cookie`：检查 Cookie 是否能被 Pixiv 识别为登录态。
 - `/pixiv_r18_test_forward`：发送最小合并转发测试。
 - `/pixiv_r18_test_forward_file`：发送包含 txt 文件的合并转发测试。
@@ -37,6 +44,9 @@ AstrBot 插件：每天 00:00 抓取 Pixiv 小说 R18 日榜，默认筛选中�
 - `work_lang`：作品语言筛选，默认 `zh`。留空则不筛选语言。
 - `limit`：抓取数量，默认 `50`。
 - `forward_batch_size`：每个合并转发包含的小说篇数，默认 `10`。
+- `illust_limit`：插画抓取数量，默认 `50`。
+- `illust_image_size`：插画下载规格，默认 `regular`。`original` 体积更大，更容易触发合并转发失败。
+- `illust_forward_batch_size`：每个插画合并转发包含的作品数，默认 `10`。
 - `schedule_hour` / `schedule_minute`：每日定时推送时间，默认 `00:00`。
 
 ## 注意

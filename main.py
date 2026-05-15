@@ -18,8 +18,12 @@ from astrbot.api.star import Context, Star, register
 
 
 RANKING_URL = "https://www.pixiv.net/novel/ranking.php"
+ILLUST_RANKING_URL = "https://www.pixiv.net/ranking.php"
 NOVEL_AJAX_URL = "https://www.pixiv.net/ajax/novel/{novel_id}"
 NOVEL_PAGE_URL = "https://www.pixiv.net/novel/show.php?id={novel_id}"
+ILLUST_AJAX_URL = "https://www.pixiv.net/ajax/illust/{illust_id}"
+ILLUST_PAGES_URL = "https://www.pixiv.net/ajax/illust/{illust_id}/pages"
+ILLUST_PAGE_URL = "https://www.pixiv.net/artworks/{illust_id}"
 
 
 @dataclass(slots=True)
@@ -35,6 +39,21 @@ class NovelEntry:
     @property
     def url(self) -> str:
         return NOVEL_PAGE_URL.format(novel_id=self.novel_id)
+
+
+@dataclass(slots=True)
+class IllustEntry:
+    illust_id: str
+    rank: int
+    title: str = ""
+    author: str = ""
+    user_id: str = ""
+    tags: tuple[str, ...] = ()
+    image_url: str = ""
+
+    @property
+    def url(self) -> str:
+        return ILLUST_PAGE_URL.format(illust_id=self.illust_id)
 
 
 @register(
@@ -115,6 +134,29 @@ class PixivNovelR18Plugin(Star):
             await self.context.send_message(
                 event.unified_msg_origin,
                 MessageChain(chain=[Comp.Plain(f"抓取失败：{exc}")]),
+            )
+            return
+
+    @filter.command("pixiv_r18_illust_run")
+    async def run_illust_once(self, event: AstrMessageEvent):
+        """立即抓取 Pixiv R18 插画日榜并发送到当前会话。"""
+        event.stop_event()
+        try:
+            await self._send_illust_info(event.unified_msg_origin)
+            entries, image_files = await self._build_illust_ranking_images()
+            await self._send_illust_images(event.unified_msg_origin, entries, image_files)
+        except httpx.ConnectError as exc:
+            logger.exception("Pixiv R18 插画日榜网络连接失败")
+            await self.context.send_message(
+                event.unified_msg_origin,
+                MessageChain(chain=[Comp.Plain(f"插画抓取失败：连接 Pixiv 失败，请检查代理是否开启且 AstrBot 能访问。详情：{exc!r}")]),
+            )
+            return
+        except Exception as exc:
+            logger.exception("Pixiv R18 插画日榜手动抓取失败")
+            await self.context.send_message(
+                event.unified_msg_origin,
+                MessageChain(chain=[Comp.Plain(f"插画抓取失败：{exc}")]),
             )
             return
 
@@ -260,10 +302,19 @@ class PixivNovelR18Plugin(Star):
     def _info_text(self) -> str:
         return "开始抓取 Pixiv R18 小说日榜，完成后会发送包含分篇 txt 的合并转发。"
 
+    def _illust_info_text(self) -> str:
+        return "开始抓取 Pixiv R18 插画日榜，完成后会发送包含标题和图片的合并转发。"
+
     async def _send_info(self, unified_msg_origin: str) -> None:
         await self.context.send_message(
             unified_msg_origin,
             MessageChain(chain=[Comp.Plain(self._info_text())]),
+        )
+
+    async def _send_illust_info(self, unified_msg_origin: str) -> None:
+        await self.context.send_message(
+            unified_msg_origin,
+            MessageChain(chain=[Comp.Plain(self._illust_info_text())]),
         )
 
     async def _build_ranking_txt(self) -> tuple[Path, list[NovelEntry], list[Path]]:
@@ -286,6 +337,35 @@ class PixivNovelR18Plugin(Star):
             file_path = self._write_txt(detailed_entries)
             novel_files = self._write_novel_txts(detailed_entries)
             return file_path, detailed_entries, novel_files
+
+    async def _build_illust_ranking_images(self) -> tuple[list[IllustEntry], list[Path]]:
+        async with self._run_lock:
+            entries = await self._fetch_illust_ranking_entries()
+            if not entries:
+                raise RuntimeError("没有从 Pixiv 插画排行页解析到作品条目，请检查 Cookie、代理或 Pixiv 页面结构。")
+
+            output_dir = self._prepare_illust_output_dir()
+            semaphore = asyncio.Semaphore(self._clamp_int("max_concurrency", 4, 1, 10))
+
+            async def download(entry: IllustEntry) -> Path | None:
+                async with semaphore:
+                    try:
+                        return await self._download_illust_image(entry, output_dir)
+                    except Exception as exc:
+                        logger.warning("下载插画失败 id=%s: %s", entry.illust_id, exc)
+                        return None
+
+            downloaded = await asyncio.gather(*(download(entry) for entry in entries))
+            kept_entries: list[IllustEntry] = []
+            image_files: list[Path] = []
+            for entry, image_file in zip(entries, downloaded, strict=False):
+                if image_file is None:
+                    continue
+                kept_entries.append(entry)
+                image_files.append(image_file)
+            if not image_files:
+                raise RuntimeError("插画排行解析成功，但没有成功下载任何图片。")
+            return kept_entries, image_files
 
     async def _fetch_ranking_entries(self) -> list[NovelEntry]:
         limit = self._clamp_int("limit", 50, 1, 100)
@@ -335,6 +415,52 @@ class PixivNovelR18Plugin(Star):
             response.raise_for_status()
             return self._parse_ranking_html(response.text, limit)
 
+    async def _fetch_illust_ranking_entries(self) -> list[IllustEntry]:
+        limit = self._clamp_int("illust_limit", 50, 1, 100)
+        mode = str(self.config.get("illust_ranking_mode", "daily_r18") or "daily_r18")
+        content = str(self.config.get("illust_content", "illust") or "illust")
+        async with self._client() as client:
+            collected: list[IllustEntry] = []
+            seen: set[str] = set()
+            for page in range(1, 4):
+                response = await client.get(
+                    ILLUST_RANKING_URL,
+                    params={"mode": mode, "content": content, "p": page, "format": "json"},
+                    headers={"Referer": "https://www.pixiv.net/"},
+                )
+                if response.status_code != 200:
+                    logger.warning(
+                        "Pixiv 插画排行 JSON 接口第 %s 页返回 %s，将尝试解析普通排行页。",
+                        page,
+                        response.status_code,
+                    )
+                    break
+                page_entries = self._parse_illust_ranking_json(response.text, limit)
+                for entry in page_entries:
+                    if entry.illust_id in seen:
+                        continue
+                    seen.add(entry.illust_id)
+                    collected.append(entry)
+                    if len(collected) >= limit:
+                        return collected[:limit]
+                if not page_entries:
+                    break
+            if collected:
+                return collected[:limit]
+
+            response = await client.get(
+                ILLUST_RANKING_URL,
+                params={"mode": mode, "content": content, "p": 1},
+                headers={"Referer": "https://www.pixiv.net/"},
+            )
+            if response.status_code in (401, 403):
+                raise RuntimeError(
+                    "Pixiv 拒绝访问插画排行页。请确认 pixiv_cookie 是完整登录 Cookie、账号已开启 R-18 显示，"
+                    "且运行 AstrBot 的服务器可以访问 pixiv.net。"
+                )
+            response.raise_for_status()
+            return self._parse_illust_ranking_html(response.text, limit)
+
     async def _fetch_novel_detail(self, entry: NovelEntry) -> NovelEntry:
         async with self._client() as client:
             response = await client.get(
@@ -349,6 +475,40 @@ class PixivNovelR18Plugin(Star):
             page = await client.get(entry.url, headers={"Referer": "https://www.pixiv.net/"})
             page.raise_for_status()
             return self._parse_novel_page(page.text, entry)
+
+    async def _download_illust_image(self, entry: IllustEntry, output_dir: Path) -> Path:
+        async with self._client() as client:
+            image_url = await self._fetch_illust_image_url(client, entry)
+            response = await client.get(
+                image_url,
+                headers={
+                    "Referer": entry.url,
+                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                },
+            )
+            response.raise_for_status()
+            ext = self._image_extension(image_url, response.headers.get("content-type", ""))
+            name = self._safe_filename(f"{entry.rank:02d}_{entry.title or entry.illust_id}_{entry.author or 'unknown'}")
+            image_path = output_dir / f"{name}{ext}"
+            image_path.write_bytes(response.content)
+            return image_path
+
+    async def _fetch_illust_image_url(self, client: httpx.AsyncClient, entry: IllustEntry) -> str:
+        response = await client.get(ILLUST_PAGES_URL.format(illust_id=entry.illust_id), headers={"Referer": entry.url})
+        if response.status_code == 200:
+            data = response.json()
+            body = data.get("body") or []
+            if isinstance(body, list) and body:
+                urls = body[0].get("urls") if isinstance(body[0], dict) else {}
+                if isinstance(urls, dict):
+                    image_size = str(self.config.get("illust_image_size", "regular") or "regular")
+                    for key in (image_size, "regular", "original", "small", "thumb_mini"):
+                        url = urls.get(key)
+                        if url:
+                            return str(url)
+        if entry.image_url:
+            return entry.image_url
+        raise RuntimeError(f"没有获取到插画图片地址：{entry.illust_id}")
 
     def _client(self) -> httpx.AsyncClient:
         cookie = self._normalize_cookie(str(self.config.get("pixiv_cookie", "") or ""))
@@ -437,6 +597,54 @@ class PixivNovelR18Plugin(Star):
             seen.add(novel_id)
             title = link.get("title") or link.get_text(" ", strip=True)
             entries.append(NovelEntry(novel_id=novel_id, rank=len(entries) + 1, title=title))
+            if len(entries) >= limit:
+                break
+        return entries
+
+    def _parse_illust_ranking_json(self, text: str, limit: int) -> list[IllustEntry]:
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+        contents = data.get("contents") or data.get("body", {}).get("contents") or []
+        entries: list[IllustEntry] = []
+        for index, item in enumerate(contents[:limit], start=1):
+            if not isinstance(item, dict):
+                continue
+            illust_id = str(item.get("illust_id") or item.get("id") or "")
+            if not illust_id:
+                continue
+            tags = item.get("tags") or []
+            if isinstance(tags, str):
+                tags = [tags]
+            entries.append(
+                IllustEntry(
+                    illust_id=illust_id,
+                    rank=int(item.get("rank") or index),
+                    title=str(item.get("title") or ""),
+                    author=str(item.get("user_name") or item.get("userName") or ""),
+                    user_id=str(item.get("user_id") or item.get("userId") or ""),
+                    tags=tuple(str(tag) for tag in tags),
+                    image_url=str(item.get("url") or item.get("illust_url") or ""),
+                )
+            )
+        return entries
+
+    def _parse_illust_ranking_html(self, text: str, limit: int) -> list[IllustEntry]:
+        soup = BeautifulSoup(text, "html.parser")
+        seen: set[str] = set()
+        entries: list[IllustEntry] = []
+        for link in soup.select('a[href*="/artworks/"], a[href*="illust_id="]'):
+            href = link.get("href") or ""
+            match = re.search(r"(?:/artworks/|illust_id=)(\d+)", href)
+            if not match:
+                continue
+            illust_id = match.group(1)
+            if illust_id in seen:
+                continue
+            seen.add(illust_id)
+            title = link.get("title") or link.get_text(" ", strip=True)
+            entries.append(IllustEntry(illust_id=illust_id, rank=len(entries) + 1, title=title))
             if len(entries) >= limit:
                 break
         return entries
@@ -573,6 +781,15 @@ class PixivNovelR18Plugin(Star):
             files.append(file_path)
         return files
 
+    def _prepare_illust_output_dir(self) -> Path:
+        tz = ZoneInfo(str(self.config.get("timezone", "Asia/Shanghai") or "Asia/Shanghai"))
+        today = datetime.now(tz).strftime("%Y-%m-%d")
+        output_dir = self._data_dir / f"pixiv_daily_r18_illusts_{today}"
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
     async def _send_txt(
         self,
         unified_msg_origin: str,
@@ -635,6 +852,80 @@ class PixivNovelR18Plugin(Star):
         nodes.extend(self._build_novel_file_nodes(entries, novel_files, sender_uin, sender_name))
         await self.context.send_message(unified_msg_origin, MessageChain(chain=[Comp.Nodes(nodes)]))
 
+    async def _send_illust_images(
+        self,
+        unified_msg_origin: str,
+        entries: list[IllustEntry],
+        image_files: list[Path],
+    ) -> None:
+        summary = (
+            f"Pixiv 插画 R18 日榜 Top {len(entries)}\n"
+            f"内容类型：{self.config.get('illust_content', 'illust')}\n"
+            f"图片规格：{self.config.get('illust_image_size', 'regular')}\n"
+            f"榜首：{entries[0].title if entries else '无'}"
+        )
+        batch_size = self._clamp_int("illust_forward_batch_size", 10, 1, 25)
+        batches = self._split_illust_batches(entries, image_files, batch_size)
+        for batch_index, (batch_entries, batch_files) in enumerate(batches, start=1):
+            try:
+                await self._send_illust_image_forward(
+                    unified_msg_origin,
+                    batch_entries,
+                    batch_files,
+                    self._format_illust_batch_summary(summary, batch_index, len(batches), batch_entries),
+                )
+                await asyncio.sleep(1.0)
+            except Exception as exc:
+                logger.exception("Pixiv R18 插画日榜合并转发第 %s/%s 包发送失败", batch_index, len(batches))
+                await self.context.send_message(
+                    unified_msg_origin,
+                    MessageChain(chain=[Comp.Plain(f"第 {batch_index}/{len(batches)} 个插画合并转发发送失败：{exc}")]),
+                )
+
+    async def _send_illust_image_forward(
+        self,
+        unified_msg_origin: str,
+        entries: list[IllustEntry],
+        image_files: list[Path],
+        title: str,
+    ) -> None:
+        sender_uin = self._clamp_int("forward_sender_uin", 10000, 1, 9999999999)
+        sender_name = str(self.config.get("forward_sender_name", "Pixiv 小说日榜") or "Pixiv 小说日榜")
+        nodes: list[Comp.Node] = [
+            Comp.Node(
+                uin=sender_uin,
+                name=sender_name,
+                content=[Comp.Plain(title + "\n\n" + self._build_illust_catalog(entries))],
+            )
+        ]
+        for entry, image_file in zip(entries, image_files, strict=False):
+            nodes.append(
+                Comp.Node(
+                    uin=sender_uin,
+                    name=sender_name,
+                    content=[
+                        Comp.Plain(
+                            "\n".join(
+                                [
+                                    f"#{entry.rank:02d} {entry.title or '(无标题)'}",
+                                    f"作者：{entry.author or '未知作者'}",
+                                    f"链接：{entry.url}",
+                                    f"图片：{image_file.name}",
+                                ]
+                            )
+                        )
+                    ],
+                )
+            )
+            nodes.append(
+                Comp.Node(
+                    uin=sender_uin,
+                    name=sender_name,
+                    content=[Comp.Image.fromFileSystem(str(image_file))],
+                )
+            )
+        await self.context.send_message(unified_msg_origin, MessageChain(chain=[Comp.Nodes(nodes)]))
+
     def _build_novel_file_nodes(
         self,
         entries: list[NovelEntry],
@@ -682,12 +973,41 @@ class PixivNovelR18Plugin(Star):
             batches.append((entries[start : start + batch_size], novel_files[start : start + batch_size]))
         return batches
 
+    def _split_illust_batches(
+        self,
+        entries: list[IllustEntry],
+        image_files: list[Path],
+        batch_size: int,
+    ) -> list[tuple[list[IllustEntry], list[Path]]]:
+        batches: list[tuple[list[IllustEntry], list[Path]]] = []
+        for start in range(0, len(entries), batch_size):
+            batches.append((entries[start : start + batch_size], image_files[start : start + batch_size]))
+        return batches
+
     def _format_batch_summary(
         self,
         summary: str,
         batch_index: int,
         batch_count: int,
         entries: list[NovelEntry],
+    ) -> str:
+        if not entries:
+            return summary
+        return "\n".join(
+            [
+                summary,
+                "",
+                f"分包：{batch_index}/{batch_count}",
+                f"范围：#{entries[0].rank:02d} - #{entries[-1].rank:02d}",
+            ]
+        )
+
+    def _format_illust_batch_summary(
+        self,
+        summary: str,
+        batch_index: int,
+        batch_count: int,
+        entries: list[IllustEntry],
     ) -> str:
         if not entries:
             return summary
@@ -761,6 +1081,12 @@ class PixivNovelR18Plugin(Star):
             lines.append(f"{entry.rank:02d}. {entry.title or '(无标题)'} / {entry.author or '未知作者'}")
         return "\n".join(lines)
 
+    def _build_illust_catalog(self, entries: list[IllustEntry]) -> str:
+        lines = ["目录"]
+        for entry in entries:
+            lines.append(f"{entry.rank:02d}. {entry.title or '(无标题)'} / {entry.author or '未知作者'}")
+        return "\n".join(lines)
+
     def _format_entry(self, entry: NovelEntry) -> str:
         return "\n".join(
             [
@@ -790,6 +1116,20 @@ class PixivNovelR18Plugin(Star):
         safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
         safe = re.sub(r"\s+", " ", safe).strip(" .")
         return (safe or "novel")[:120]
+
+    def _image_extension(self, url: str, content_type: str) -> str:
+        content_type = content_type.lower()
+        if "png" in content_type:
+            return ".png"
+        if "webp" in content_type:
+            return ".webp"
+        if "gif" in content_type:
+            return ".gif"
+        match = re.search(r"\.(jpg|jpeg|png|webp|gif)(?:$|[?&])", url, re.IGNORECASE)
+        if match:
+            ext = match.group(1).lower()
+            return ".jpg" if ext == "jpeg" else f".{ext}"
+        return ".jpg"
 
     def _resolve_data_dir(self) -> Path:
         cwd_data = Path.cwd() / "data" / "pixiv_novel_r18"
