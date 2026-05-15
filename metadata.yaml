@@ -1,0 +1,10 @@
+name: astrbot_plugin_pixiv_novel_r18
+display_name: Pixiv R18 小说日榜推送
+desc: 每天定时抓取 Pixiv R18 小说日榜前 50，合并为 txt 并推送到订阅群。
+short_desc: Pixiv R18 小说日榜 txt 定时推送
+author: aki
+version: 1.0.0
+repo: "https://github.com/aki0623/astrbot_plugin_pixiv_novel_r18"
+astrbot_version: ">=4.16.0"
+support_platforms:
+  - aiocqhttp

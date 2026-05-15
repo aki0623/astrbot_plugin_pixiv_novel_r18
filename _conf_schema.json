@@ -1,0 +1,89 @@
+{
+  "enabled": {
+    "description": "启用每日定时推送",
+    "type": "bool",
+    "default": true
+  },
+  "target_unified_msg_origins": {
+    "description": "推送目标会话列表",
+    "type": "list",
+    "hint": "建议在目标群发送 /pixiv_r18_subscribe add 自动写入；也可以手动填 unified_msg_origin。",
+    "default": []
+  },
+  "pixiv_cookie": {
+    "description": "Pixiv 登录 Cookie",
+    "type": "text",
+    "hint": "必须使用可访问 R18 内容的 Pixiv 账号 Cookie，至少包含 PHPSESSID。请勿公开分享。",
+    "obvious_hint": true,
+    "default": ""
+  },
+  "timezone": {
+    "description": "定时任务时区",
+    "type": "string",
+    "default": "Asia/Shanghai"
+  },
+  "schedule_hour": {
+    "description": "每日推送小时",
+    "type": "int",
+    "hint": "24 点即次日 00 点，这里填 0。",
+    "default": 0
+  },
+  "schedule_minute": {
+    "description": "每日推送分钟",
+    "type": "int",
+    "default": 0
+  },
+  "ranking_mode": {
+    "description": "Pixiv 小说排行模式",
+    "type": "string",
+    "default": "daily_r18"
+  },
+  "work_lang": {
+    "description": "作品语言筛选",
+    "type": "string",
+    "hint": "Pixiv 小说排行的语言筛选参数。中文填 zh；留空则不筛选语言。",
+    "default": "zh"
+  },
+  "limit": {
+    "description": "抓取数量",
+    "type": "int",
+    "default": 50
+  },
+  "request_timeout": {
+    "description": "请求超时秒数",
+    "type": "float",
+    "default": 25.0
+  },
+  "max_concurrency": {
+    "description": "小说详情抓取并发数",
+    "type": "int",
+    "default": 4
+  },
+  "send_as_forward": {
+    "description": "使用合并转发消息发送",
+    "type": "bool",
+    "hint": "OneBot v11 / aiocqhttp 支持；其他平台可能不支持，会自动回退为普通文件消息。",
+    "default": true
+  },
+  "forward_batch_size": {
+    "description": "每个合并转发包含的小说篇数",
+    "type": "int",
+    "hint": "NapCat 已测试前 10 篇真实 txt 文件合并转发可用，建议保持 10。",
+    "default": 10
+  },
+  "forward_sender_uin": {
+    "description": "合并转发节点显示 QQ",
+    "type": "int",
+    "default": 10000
+  },
+  "forward_sender_name": {
+    "description": "合并转发节点显示昵称",
+    "type": "string",
+    "default": "Pixiv 小说日榜"
+  },
+  "user_agent": {
+    "description": "请求 User-Agent",
+    "type": "string",
+    "default": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+  }
+}
