@@ -96,8 +96,8 @@
   "illust_forward_batch_size": {
     "description": "每个插画合并转发包含的作品数",
     "type": "int",
-    "hint": "建议 10；如果图片发送失败，可以改成 5。",
-    "default": 10
+    "hint": "图片合并转发比 txt 更容易失败，建议 5；网络和 NapCat 稳定时可改成 10。",
+    "default": 5
   },
   "forward_sender_uin": {
     "description": "合并转发节点显示 QQ",

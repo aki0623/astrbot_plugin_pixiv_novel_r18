@@ -864,7 +864,7 @@ class PixivNovelR18Plugin(Star):
             f"图片规格：{self.config.get('illust_image_size', 'regular')}\n"
             f"榜首：{entries[0].title if entries else '无'}"
         )
-        batch_size = self._clamp_int("illust_forward_batch_size", 10, 1, 25)
+        batch_size = self._clamp_int("illust_forward_batch_size", 5, 1, 25)
         batches = self._split_illust_batches(entries, image_files, batch_size)
         for batch_index, (batch_entries, batch_files) in enumerate(batches, start=1):
             try:
@@ -879,7 +879,14 @@ class PixivNovelR18Plugin(Star):
                 logger.exception("Pixiv R18 插画日榜合并转发第 %s/%s 包发送失败", batch_index, len(batches))
                 await self.context.send_message(
                     unified_msg_origin,
-                    MessageChain(chain=[Comp.Plain(f"第 {batch_index}/{len(batches)} 个插画合并转发发送失败：{exc}")]),
+                    MessageChain(
+                        chain=[
+                            Comp.Plain(
+                                f"第 {batch_index}/{len(batches)} 个插画合并转发发送失败：{exc}\n"
+                                "如果偶发失败，建议把 illust_forward_batch_size 调小，或稍后重试。"
+                            )
+                        ]
+                    ),
                 )
 
     async def _send_illust_image_forward(
