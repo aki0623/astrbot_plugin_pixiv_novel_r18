@@ -240,6 +240,54 @@ class PixivNovelR18Plugin(Star):
                 MessageChain(chain=[Comp.Plain(f"合并转发 txt 文件测试失败：{exc}")]),
             )
 
+    @filter.command("pixiv_r18_test_nested_forward")
+    async def test_nested_forward(self, event: AstrMessageEvent):
+        """发送一个嵌套合并转发测试：外层合并转发中包含内层合并转发。"""
+        event.stop_event()
+        sender_uin = self._clamp_int("forward_sender_uin", 10000, 1, 9999999999)
+        sender_name = str(self.config.get("forward_sender_name", "Pixiv 小说日榜") or "Pixiv 小说日榜")
+        inner_nodes = Comp.Nodes(
+            [
+                Comp.Node(
+                    uin=sender_uin,
+                    name=sender_name,
+                    content=[Comp.Plain("内层合并转发 1/2：如果能展开到这里，说明嵌套第一层成功。")],
+                ),
+                Comp.Node(
+                    uin=sender_uin,
+                    name=sender_name,
+                    content=[Comp.Plain("内层合并转发 2/2：嵌套测试结束。")],
+                ),
+            ]
+        )
+        outer_nodes = Comp.Nodes(
+            [
+                Comp.Node(
+                    uin=sender_uin,
+                    name=sender_name,
+                    content=[Comp.Plain("外层合并转发 1/3：下面会尝试嵌入一个内层合并转发。")],
+                ),
+                Comp.Node(
+                    uin=sender_uin,
+                    name=sender_name,
+                    content=[inner_nodes],
+                ),
+                Comp.Node(
+                    uin=sender_uin,
+                    name=sender_name,
+                    content=[Comp.Plain("外层合并转发 3/3：如果这条也能看到，说明外层发送完成。")],
+                ),
+            ]
+        )
+        try:
+            await self.context.send_message(event.unified_msg_origin, MessageChain(chain=[outer_nodes]))
+        except Exception as exc:
+            logger.exception("Pixiv R18 嵌套合并转发测试失败")
+            await self.context.send_message(
+                event.unified_msg_origin,
+                MessageChain(chain=[Comp.Plain(f"嵌套合并转发测试失败：{exc}")]),
+            )
+
     @filter.command("pixiv_r18_test_10")
     async def test_forward_10_novels(self, event: AstrMessageEvent):
         """抓取并发送前 10 篇小说标题和 txt 文件，用来测试真实 Pixiv 文件合并转发。"""
