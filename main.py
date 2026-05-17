@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from bs4 import BeautifulSoup
+from PIL import Image as PILImage
+from PIL import ImageOps
 
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
@@ -352,7 +354,7 @@ class PixivNovelR18Plugin(Star):
         return "开始抓取 Pixiv R18 小说日榜，完成后会发送包含分篇 txt 的合并转发。"
 
     def _illust_info_text(self) -> str:
-        return "开始抓取 Pixiv R18 插画日榜，完成后会发送包含标题和图片的合并转发。"
+        return "开始抓取 Pixiv R18 插画日榜，完成后会发送 PDF 和 zip 图片合集。"
 
     async def _send_info(self, unified_msg_origin: str) -> None:
         await self.context.send_message(
@@ -387,7 +389,7 @@ class PixivNovelR18Plugin(Star):
             novel_files = self._write_novel_txts(detailed_entries)
             return file_path, detailed_entries, novel_files
 
-    async def _build_illust_ranking_images(self) -> tuple[list[IllustEntry], list[Path]]:
+    async def _build_illust_ranking_images(self) -> tuple[list[IllustEntry], list[list[Path]]]:
         async with self._run_lock:
             entries = await self._fetch_illust_ranking_entries()
             if not entries:
@@ -396,25 +398,25 @@ class PixivNovelR18Plugin(Star):
             output_dir = self._prepare_illust_output_dir()
             semaphore = asyncio.Semaphore(self._clamp_int("max_concurrency", 4, 1, 10))
 
-            async def download(entry: IllustEntry) -> Path | None:
+            async def download(entry: IllustEntry) -> list[Path]:
                 async with semaphore:
                     try:
-                        return await self._download_illust_image(entry, output_dir)
+                        return await self._download_illust_images(entry, output_dir)
                     except Exception as exc:
                         logger.warning("下载插画失败 id=%s: %s", entry.illust_id, exc)
-                        return None
+                        return []
 
             downloaded = await asyncio.gather(*(download(entry) for entry in entries))
             kept_entries: list[IllustEntry] = []
-            image_files: list[Path] = []
-            for entry, image_file in zip(entries, downloaded, strict=False):
-                if image_file is None:
+            image_groups: list[list[Path]] = []
+            for entry, files in zip(entries, downloaded, strict=False):
+                if not files:
                     continue
                 kept_entries.append(entry)
-                image_files.append(image_file)
-            if not image_files:
+                image_groups.append(files)
+            if not image_groups:
                 raise RuntimeError("插画排行解析成功，但没有成功下载任何图片。")
-            return kept_entries, image_files
+            return kept_entries, image_groups
 
     async def _fetch_ranking_entries(self) -> list[NovelEntry]:
         limit = self._clamp_int("limit", 50, 1, 100)
@@ -525,38 +527,46 @@ class PixivNovelR18Plugin(Star):
             page.raise_for_status()
             return self._parse_novel_page(page.text, entry)
 
-    async def _download_illust_image(self, entry: IllustEntry, output_dir: Path) -> Path:
+    async def _download_illust_images(self, entry: IllustEntry, output_dir: Path) -> list[Path]:
         async with self._client() as client:
-            image_url = await self._fetch_illust_image_url(client, entry)
-            response = await client.get(
-                image_url,
-                headers={
-                    "Referer": entry.url,
-                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-                },
-            )
-            response.raise_for_status()
-            ext = self._image_extension(image_url, response.headers.get("content-type", ""))
-            name = self._safe_filename(f"{entry.rank:02d}_{entry.title or entry.illust_id}_{entry.author or 'unknown'}")
-            image_path = output_dir / f"{name}{ext}"
-            image_path.write_bytes(response.content)
-            return image_path
+            image_urls = await self._fetch_illust_image_urls(client, entry)
+            image_paths: list[Path] = []
+            base_name = self._safe_filename(f"{entry.rank:02d}_{entry.title or entry.illust_id}_{entry.author or 'unknown'}")
+            for page_index, image_url in enumerate(image_urls, start=1):
+                response = await client.get(
+                    image_url,
+                    headers={
+                        "Referer": entry.url,
+                        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                    },
+                )
+                response.raise_for_status()
+                ext = self._image_extension(image_url, response.headers.get("content-type", ""))
+                suffix = f"_p{page_index:02d}" if len(image_urls) > 1 else ""
+                image_path = output_dir / f"{base_name}{suffix}{ext}"
+                image_path.write_bytes(response.content)
+                image_paths.append(image_path)
+            return image_paths
 
-    async def _fetch_illust_image_url(self, client: httpx.AsyncClient, entry: IllustEntry) -> str:
+    async def _fetch_illust_image_urls(self, client: httpx.AsyncClient, entry: IllustEntry) -> list[str]:
         response = await client.get(ILLUST_PAGES_URL.format(illust_id=entry.illust_id), headers={"Referer": entry.url})
         if response.status_code == 200:
             data = response.json()
             body = data.get("body") or []
-            if isinstance(body, list) and body:
-                urls = body[0].get("urls") if isinstance(body[0], dict) else {}
+            image_urls: list[str] = []
+            image_size = str(self.config.get("illust_image_size", "regular") or "regular")
+            for page in body if isinstance(body, list) else []:
+                urls = page.get("urls") if isinstance(page, dict) else {}
                 if isinstance(urls, dict):
-                    image_size = str(self.config.get("illust_image_size", "regular") or "regular")
                     for key in (image_size, "regular", "original", "small", "thumb_mini"):
                         url = urls.get(key)
                         if url:
-                            return str(url)
+                            image_urls.append(str(url))
+                            break
+            if image_urls:
+                return image_urls
         if entry.image_url:
-            return entry.image_url
+            return [entry.image_url]
         raise RuntimeError(f"没有获取到插画图片地址：{entry.illust_id}")
 
     def _client(self) -> httpx.AsyncClient:
@@ -839,7 +849,7 @@ class PixivNovelR18Plugin(Star):
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
 
-    def _write_illust_zip(self, entries: list[IllustEntry], image_files: list[Path]) -> Path:
+    def _write_illust_zip(self, entries: list[IllustEntry], image_groups: list[list[Path]]) -> Path:
         tz = ZoneInfo(str(self.config.get("timezone", "Asia/Shanghai") or "Asia/Shanghai"))
         today = datetime.now(tz).strftime("%Y-%m-%d")
         zip_path = self._data_dir / f"pixiv_daily_r18_illusts_{today}.zip"
@@ -855,20 +865,50 @@ class PixivNovelR18Plugin(Star):
             "",
             "目录",
         ]
-        for entry, image_file in zip(entries, image_files, strict=False):
+        for entry, files in zip(entries, image_groups, strict=False):
             manifest_lines.extend(
                 [
                     f"{entry.rank:02d}. {entry.title or '(无标题)'} / {entry.author or '未知作者'}",
                     f"    链接：{entry.url}",
-                    f"    文件：{image_file.name}",
+                    f"    文件：{', '.join(image_file.name for image_file in files)}",
                 ]
             )
 
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("manifest.txt", "\n".join(manifest_lines))
-            for image_file in image_files:
+            for image_file in self._flatten_image_groups(image_groups):
                 archive.write(image_file, arcname=image_file.name)
         return zip_path
+
+    def _write_illust_pdf(self, entries: list[IllustEntry], image_groups: list[list[Path]]) -> Path:
+        tz = ZoneInfo(str(self.config.get("timezone", "Asia/Shanghai") or "Asia/Shanghai"))
+        today = datetime.now(tz).strftime("%Y-%m-%d")
+        pdf_path = self._data_dir / f"pixiv_daily_r18_illusts_{today}.pdf"
+        if pdf_path.exists():
+            pdf_path.unlink()
+
+        pdf_pages: list[PILImage.Image] = []
+        try:
+            for image_file in self._flatten_image_groups(image_groups):
+                with PILImage.open(image_file) as image:
+                    page = ImageOps.exif_transpose(image)
+                    if page.mode in ("RGBA", "LA", "P"):
+                        background = PILImage.new("RGB", page.size, "white")
+                        if page.mode == "P":
+                            page = page.convert("RGBA")
+                        background.paste(page, mask=page.getchannel("A") if page.mode in ("RGBA", "LA") else None)
+                        page = background
+                    else:
+                        page = page.convert("RGB")
+                    pdf_pages.append(page.copy())
+            if not pdf_pages:
+                raise RuntimeError("没有可写入 PDF 的插画图片。")
+            first_page, rest_pages = pdf_pages[0], pdf_pages[1:]
+            first_page.save(pdf_path, "PDF", save_all=True, append_images=rest_pages)
+            return pdf_path
+        finally:
+            for page in pdf_pages:
+                page.close()
 
     async def _send_txt(
         self,
@@ -936,11 +976,12 @@ class PixivNovelR18Plugin(Star):
         self,
         unified_msg_origin: str,
         entries: list[IllustEntry],
-        image_files: list[Path],
+        image_groups: list[list[Path]],
     ) -> None:
         if self._config_bool("illust_send_as_zip", True):
-            zip_path = self._write_illust_zip(entries, image_files)
-            await self._send_illust_zip(unified_msg_origin, entries, zip_path)
+            pdf_path = self._write_illust_pdf(entries, image_groups)
+            zip_path = self._write_illust_zip(entries, image_groups)
+            await self._send_illust_archives(unified_msg_origin, pdf_path, zip_path)
             return
 
         summary = (
@@ -950,7 +991,7 @@ class PixivNovelR18Plugin(Star):
             f"榜首：{entries[0].title if entries else '无'}"
         )
         batch_size = self._clamp_int("illust_forward_batch_size", 5, 1, 25)
-        batches = self._split_illust_batches(entries, image_files, batch_size)
+        batches = self._split_illust_batches(entries, image_groups, batch_size)
         for batch_index, (batch_entries, batch_files) in enumerate(batches, start=1):
             try:
                 await self._send_illust_image_forward(
@@ -978,7 +1019,7 @@ class PixivNovelR18Plugin(Star):
         self,
         unified_msg_origin: str,
         entries: list[IllustEntry],
-        image_files: list[Path],
+        image_groups: list[list[Path]],
         title: str,
     ) -> None:
         sender_uin = self._clamp_int("forward_sender_uin", 10000, 1, 9999999999)
@@ -990,7 +1031,7 @@ class PixivNovelR18Plugin(Star):
                 content=[Comp.Plain(title + "\n\n" + self._build_illust_catalog(entries))],
             )
         ]
-        for entry, image_file in zip(entries, image_files, strict=False):
+        for entry, files in zip(entries, image_groups, strict=False):
             nodes.append(
                 Comp.Node(
                     uin=sender_uin,
@@ -1002,37 +1043,33 @@ class PixivNovelR18Plugin(Star):
                                     f"#{entry.rank:02d} {entry.title or '(无标题)'}",
                                     f"作者：{entry.author or '未知作者'}",
                                     f"链接：{entry.url}",
-                                    f"图片：{image_file.name}",
+                                    f"图片：{', '.join(image_file.name for image_file in files)}",
                                 ]
                             )
                         )
                     ],
                 )
             )
-            nodes.append(
-                Comp.Node(
-                    uin=sender_uin,
-                    name=sender_name,
-                    content=[Comp.Image.fromFileSystem(str(image_file))],
+            for image_file in files:
+                nodes.append(
+                    Comp.Node(
+                        uin=sender_uin,
+                        name=sender_name,
+                        content=[Comp.Image.fromFileSystem(str(image_file))],
+                    )
                 )
-            )
         await self.context.send_message(unified_msg_origin, MessageChain(chain=[Comp.Nodes(nodes)]))
 
-    async def _send_illust_zip(
+    async def _send_illust_archives(
         self,
         unified_msg_origin: str,
-        entries: list[IllustEntry],
+        pdf_path: Path,
         zip_path: Path,
     ) -> None:
-        size_mb = zip_path.stat().st_size / 1024 / 1024
-        summary = (
-            f"Pixiv 插画 R18 日榜 Top {len(entries)}\n"
-            f"已打包为图片合集：{zip_path.name}\n"
-            f"文件大小：{size_mb:.2f} MB\n"
-            f"图片规格：{self.config.get('illust_image_size', 'regular')}\n"
-            f"榜首：{entries[0].title if entries else '无'}"
+        await self.context.send_message(
+            unified_msg_origin,
+            MessageChain(chain=[Comp.File(name=pdf_path.name, file=str(pdf_path))]),
         )
-        await self.context.send_message(unified_msg_origin, MessageChain(chain=[Comp.Plain(summary)]))
         await self.context.send_message(
             unified_msg_origin,
             MessageChain(chain=[Comp.File(name=zip_path.name, file=str(zip_path))]),
@@ -1088,13 +1125,16 @@ class PixivNovelR18Plugin(Star):
     def _split_illust_batches(
         self,
         entries: list[IllustEntry],
-        image_files: list[Path],
+        image_groups: list[list[Path]],
         batch_size: int,
-    ) -> list[tuple[list[IllustEntry], list[Path]]]:
-        batches: list[tuple[list[IllustEntry], list[Path]]] = []
+    ) -> list[tuple[list[IllustEntry], list[list[Path]]]]:
+        batches: list[tuple[list[IllustEntry], list[list[Path]]]] = []
         for start in range(0, len(entries), batch_size):
-            batches.append((entries[start : start + batch_size], image_files[start : start + batch_size]))
+            batches.append((entries[start : start + batch_size], image_groups[start : start + batch_size]))
         return batches
+
+    def _flatten_image_groups(self, image_groups: list[list[Path]]) -> list[Path]:
+        return [image_file for files in image_groups for image_file in files]
 
     def _format_batch_summary(
         self,

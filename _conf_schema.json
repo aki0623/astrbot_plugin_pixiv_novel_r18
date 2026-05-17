@@ -94,9 +94,9 @@
     "default": "regular"
   },
   "illust_send_as_zip": {
-    "description": "插画以 zip 合集文件发送",
+    "description": "插画以 PDF + zip 合集文件发送",
     "type": "bool",
-    "hint": "开启后会把全部插画打包成一个 zip 文件发送，绕开图片合并转发的不稳定问题。",
+    "hint": "开启后会把全部插画页合成一个 PDF，并另打包一个 zip 文件发送，绕开图片合并转发的不稳定问题。",
     "default": true
   },
   "illust_forward_batch_size": {
