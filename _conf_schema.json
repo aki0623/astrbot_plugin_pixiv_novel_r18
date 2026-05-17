@@ -93,6 +93,12 @@
     "hint": "建议 regular。可填 original，但图片更大，合并转发更容易失败。",
     "default": "regular"
   },
+  "illust_send_as_zip": {
+    "description": "插画以 zip 合集文件发送",
+    "type": "bool",
+    "hint": "开启后会把全部插画打包成一个 zip 文件发送，绕开图片合并转发的不稳定问题。",
+    "default": true
+  },
   "illust_forward_batch_size": {
     "description": "每个插画合并转发包含的作品数",
     "type": "int",

@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import shutil
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -838,6 +839,37 @@ class PixivNovelR18Plugin(Star):
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
 
+    def _write_illust_zip(self, entries: list[IllustEntry], image_files: list[Path]) -> Path:
+        tz = ZoneInfo(str(self.config.get("timezone", "Asia/Shanghai") or "Asia/Shanghai"))
+        today = datetime.now(tz).strftime("%Y-%m-%d")
+        zip_path = self._data_dir / f"pixiv_daily_r18_illusts_{today}.zip"
+        if zip_path.exists():
+            zip_path.unlink()
+
+        manifest_lines = [
+            f"Pixiv 插画 R18 日榜 Top {len(entries)}",
+            f"生成时间：{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S %Z')}",
+            f"排行模式：{self.config.get('illust_ranking_mode', 'daily_r18')}",
+            f"内容类型：{self.config.get('illust_content', 'illust')}",
+            f"图片规格：{self.config.get('illust_image_size', 'regular')}",
+            "",
+            "目录",
+        ]
+        for entry, image_file in zip(entries, image_files, strict=False):
+            manifest_lines.extend(
+                [
+                    f"{entry.rank:02d}. {entry.title or '(无标题)'} / {entry.author or '未知作者'}",
+                    f"    链接：{entry.url}",
+                    f"    文件：{image_file.name}",
+                ]
+            )
+
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("manifest.txt", "\n".join(manifest_lines))
+            for image_file in image_files:
+                archive.write(image_file, arcname=image_file.name)
+        return zip_path
+
     async def _send_txt(
         self,
         unified_msg_origin: str,
@@ -906,6 +938,11 @@ class PixivNovelR18Plugin(Star):
         entries: list[IllustEntry],
         image_files: list[Path],
     ) -> None:
+        if self._config_bool("illust_send_as_zip", True):
+            zip_path = self._write_illust_zip(entries, image_files)
+            await self._send_illust_zip(unified_msg_origin, entries, zip_path)
+            return
+
         summary = (
             f"Pixiv 插画 R18 日榜 Top {len(entries)}\n"
             f"内容类型：{self.config.get('illust_content', 'illust')}\n"
@@ -980,6 +1017,26 @@ class PixivNovelR18Plugin(Star):
                 )
             )
         await self.context.send_message(unified_msg_origin, MessageChain(chain=[Comp.Nodes(nodes)]))
+
+    async def _send_illust_zip(
+        self,
+        unified_msg_origin: str,
+        entries: list[IllustEntry],
+        zip_path: Path,
+    ) -> None:
+        size_mb = zip_path.stat().st_size / 1024 / 1024
+        summary = (
+            f"Pixiv 插画 R18 日榜 Top {len(entries)}\n"
+            f"已打包为图片合集：{zip_path.name}\n"
+            f"文件大小：{size_mb:.2f} MB\n"
+            f"图片规格：{self.config.get('illust_image_size', 'regular')}\n"
+            f"榜首：{entries[0].title if entries else '无'}"
+        )
+        await self.context.send_message(unified_msg_origin, MessageChain(chain=[Comp.Plain(summary)]))
+        await self.context.send_message(
+            unified_msg_origin,
+            MessageChain(chain=[Comp.File(name=zip_path.name, file=str(zip_path))]),
+        )
 
     def _build_novel_file_nodes(
         self,
