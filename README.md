@@ -55,3 +55,4 @@ AstrBot 插件：每天 00:00 抓取 Pixiv 小说 R18 日榜，默认筛选中�
 - Pixiv R18 内容必须登录后访问，账号需要开启 R-18 显示。
 - 合并转发消息目前主要适配 OneBot v11 / aiocqhttp / NapCat。
 - 不要把真实 Cookie 提交到仓库或公开分享。
+- `pixiv_daily`: 只发送一条总提示，然后依次抓取并发送 Pixiv R18 小说日榜和插画日榜。

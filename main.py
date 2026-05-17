@@ -163,6 +163,42 @@ class PixivNovelR18Plugin(Star):
             )
             return
 
+    @filter.command("pixiv_daily")
+    async def run_daily_once(self, event: AstrMessageEvent):
+        """立即抓取 Pixiv R18 小说和插画日榜，并发送到当前会话。"""
+        event.stop_event()
+        errors: list[str] = []
+        try:
+            await self._send_daily_info(event.unified_msg_origin)
+        except Exception:
+            logger.exception("Pixiv Daily info 发送失败")
+
+        try:
+            file_path, entries, novel_files = await self._build_ranking_txt()
+            await self._send_txt(event.unified_msg_origin, file_path, entries, novel_files)
+        except httpx.ConnectError as exc:
+            logger.exception("Pixiv Daily 小说日榜网络连接失败")
+            errors.append(f"小说抓取失败：连接 Pixiv 失败，请检查代理。详情：{exc!r}")
+        except Exception as exc:
+            logger.exception("Pixiv Daily 小说日榜抓取失败")
+            errors.append(f"小说抓取失败：{exc}")
+
+        try:
+            entries, image_files = await self._build_illust_ranking_images()
+            await self._send_illust_images(event.unified_msg_origin, entries, image_files)
+        except httpx.ConnectError as exc:
+            logger.exception("Pixiv Daily 插画日榜网络连接失败")
+            errors.append(f"插画抓取失败：连接 Pixiv 失败，请检查代理。详情：{exc!r}")
+        except Exception as exc:
+            logger.exception("Pixiv Daily 插画日榜抓取失败")
+            errors.append(f"插画抓取失败：{exc}")
+
+        if errors:
+            await self.context.send_message(
+                event.unified_msg_origin,
+                MessageChain(chain=[Comp.Plain("\n".join(errors))]),
+            )
+
     @filter.command("pixiv_r18_check_cookie")
     async def check_cookie(self, event: AstrMessageEvent):
         """检查 Pixiv Cookie 是否能被 Pixiv 识别为登录态。"""
@@ -356,6 +392,9 @@ class PixivNovelR18Plugin(Star):
     def _illust_info_text(self) -> str:
         return "开始抓取 Pixiv R18 插画日榜，完成后会发送 PDF 和 zip 图片合集。"
 
+    def _daily_info_text(self) -> str:
+        return "开始抓取 Pixiv R18 小说和插画日榜，完成后会依次发送小说合集、插画 PDF 和 zip。"
+
     async def _send_info(self, unified_msg_origin: str) -> None:
         await self.context.send_message(
             unified_msg_origin,
@@ -366,6 +405,12 @@ class PixivNovelR18Plugin(Star):
         await self.context.send_message(
             unified_msg_origin,
             MessageChain(chain=[Comp.Plain(self._illust_info_text())]),
+        )
+
+    async def _send_daily_info(self, unified_msg_origin: str) -> None:
+        await self.context.send_message(
+            unified_msg_origin,
+            MessageChain(chain=[Comp.Plain(self._daily_info_text())]),
         )
 
     async def _build_ranking_txt(self) -> tuple[Path, list[NovelEntry], list[Path]]:
